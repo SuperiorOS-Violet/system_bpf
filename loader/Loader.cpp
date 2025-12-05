@@ -161,8 +161,7 @@ static int getSymName(ifstream& elfFile, int nameOff, string& name) {
 }
 
 // Reads a full section by name - example to get the GPL license
-template <typename T>
-static int readSectionByName(const char* name, ifstream& elfFile, vector<T>& data) {
+static int readSectionByName(const char* name, ifstream& elfFile, vector<char>& data) {
     vector<char> secStrTab;
     vector<Elf64_Shdr> shTable;
     int ret;
@@ -181,10 +180,8 @@ static int readSectionByName(const char* name, ifstream& elfFile, vector<T>& dat
             elfFile.seekg(shTable[i].sh_offset);
             if (elfFile.fail()) return -1;
 
-            if (shTable[i].sh_size % sizeof(T)) return -1;
-            data.resize(shTable[i].sh_size / sizeof(T));
-            if (!elfFile.read(reinterpret_cast<char*>(data.data()), shTable[i].sh_size))
-                return -1;
+            data.resize(shTable[i].sh_size);
+            if (!elfFile.read(data.data(), shTable[i].sh_size)) return -1;
 
             return 0;
         }
@@ -257,7 +254,19 @@ static int readSymTab(ifstream& elfFile, int sort, vector<Elf64_Sym>& data) {
 }
 
 static int readProgDefs(ifstream& elfFile, vector<struct bpf_prog_def>& pd) {
-    return readSectionByName("progs", elfFile, pd);
+    vector<char> pdData;
+    int ret = readSectionByName("progs", elfFile, pdData);
+    if (ret) return ret;
+
+    if (pdData.size() % sizeof(struct bpf_prog_def)) {
+        ALOGE("readProgDefs failed due to improper sized progs section, %zu %% %zu != 0",
+              pdData.size(), sizeof(struct bpf_prog_def));
+        return -1;
+    };
+
+    pd.resize(pdData.size() / sizeof(struct bpf_prog_def));
+    memcpy(pd.data(), pdData.data(), pdData.size());
+    return 0;
 }
 
 static int getSectionSymNames(ifstream& elfFile, const string& sectionName, vector<string>& names,
@@ -436,13 +445,22 @@ static bool mapMatchesExpectations(const unique_fd& fd, const string& mapName,
 static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>& mapFds,
                       const char* prefix) {
     int ret;
+    vector<char> mdData;
     vector<struct bpf_map_def> md;
     vector<string> mapNames;
     string objName = pathToObjName(string(elfPath));
 
-    ret = readSectionByName("maps", elfFile, md);
+    ret = readSectionByName("maps", elfFile, mdData);
     if (ret == -2) return 0;  // no maps to read
     if (ret) return ret;
+
+    if (mdData.size() % sizeof(struct bpf_map_def)) {
+        ALOGE("createMaps failed due to improper sized maps section, %zu %% %zu != 0",
+              mdData.size(), sizeof(struct bpf_map_def));
+        return -1;
+    }
+    md.resize(mdData.size() / sizeof(struct bpf_map_def));
+    memcpy(md.data(), mdData.data(), mdData.size());
 
     ret = getSectionSymNames(elfFile, "maps", mapNames);
     if (ret) return ret;
